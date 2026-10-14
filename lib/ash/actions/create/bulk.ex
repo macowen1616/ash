@@ -2016,7 +2016,13 @@ defmodule Ash.Actions.Create.Bulk do
                 end) ||
                 (module.has_batch_change?() &&
                    module.has_after_batch?() &&
-                   Ash.Resource.Change.batch_callbacks?(module, batch, change_opts, context))
+                   Ash.Actions.Update.Bulk.batch_callbacks_for_batch?(
+                     module,
+                     batch,
+                     change_opts,
+                     actor,
+                     context
+                   ))
 
             %{
               state
@@ -2078,7 +2084,13 @@ defmodule Ash.Actions.Create.Bulk do
                   end) ||
                   (module.has_batch_change?() &&
                      module.has_after_batch?() &&
-                     Ash.Resource.Change.batch_callbacks?(module, batch, change_opts, context))
+                     Ash.Actions.Update.Bulk.batch_callbacks_for_batch?(
+                       module,
+                       batch,
+                       change_opts,
+                       actor,
+                       context
+                     ))
 
               %{
                 state
@@ -2103,6 +2115,8 @@ defmodule Ash.Actions.Create.Bulk do
       {:templated, change_opts} ->
         cond do
           module.has_batch_change?() ->
+            {:ok, change_opts} = Ash.Resource.Change.init(module, change_opts)
+
             Ash.Resource.Change.batch_change(
               module,
               batch,
