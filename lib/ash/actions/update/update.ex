@@ -128,24 +128,16 @@ defmodule Ash.Actions.Update do
               |> then(fn
                 %Ash.Changeset{} = atomic_changeset ->
                   atomic_changeset
-                  |> then(fn atomic_changeset ->
-                    Enum.reduce(
-                      changeset.atomic_after_action,
-                      atomic_changeset,
-                      fn after_action, atomic_changeset ->
-                        Ash.Changeset.after_action(atomic_changeset, after_action)
-                      end
-                    )
-                  end)
-                  |> then(fn atomic_changeset ->
-                    Enum.reduce(
-                      changeset.atomic_after_transaction,
-                      atomic_changeset,
-                      fn after_transaction, atomic_changeset ->
-                        Ash.Changeset.after_transaction(atomic_changeset, after_transaction)
-                      end
-                    )
-                  end)
+                  |> restore_hooks(
+                    &Ash.Changeset.after_action/3,
+                    changeset.atomic_after_action_prepend,
+                    changeset.atomic_after_action
+                  )
+                  |> restore_hooks(
+                    &Ash.Changeset.after_transaction/3,
+                    changeset.atomic_after_transaction_prepend,
+                    changeset.atomic_after_transaction
+                  )
 
                 other ->
                   other
@@ -228,7 +220,9 @@ defmodule Ash.Actions.Update do
                    authorize_query?: false,
                    return_records?: true,
                    atomic_changeset: atomic_changeset,
-                   authorize_changeset_with: authorize_changeset_with
+                   authorize_changeset_with: authorize_changeset_with,
+                   transaction:
+                     Keyword.get(opts, :transaction?, true) && action.transaction? && :batch
                  )
                ) do
             %Ash.BulkResult{status: :success, records: [record], notifications: notifications} ->
@@ -390,6 +384,18 @@ defmodule Ash.Actions.Update do
     end
   end
 
+  # Adds the hooks that were added to the original changeset outside of its
+  # action's changes to the atomic changeset rebuilt from those changes, in the
+  # same place relative to the action's hooks (see `Ash.Changeset.after_action/3`).
+  defp restore_hooks(atomic_changeset, add_hook, prepended, appended) do
+    atomic_changeset =
+      prepended
+      |> Enum.reverse()
+      |> Enum.reduce(atomic_changeset, &add_hook.(&2, &1, prepend?: true))
+
+    Enum.reduce(appended, atomic_changeset, &add_hook.(&2, &1, []))
+  end
+
   defp authorize(changeset, opts) do
     if opts[:authorize?] && Ash.Actions.Helpers.authorizers?(changeset) do
       case Ash.can(changeset, opts[:actor],
@@ -421,6 +427,11 @@ defmodule Ash.Actions.Update do
       |> Ash.Actions.Helpers.put_write_as_of(changeset.resource, changeset.as_of)
 
     {:ok, %{data | __metadata__: metadata}}
+  end
+
+  defp add_tenant({:ok, data, instructions}, changeset) do
+    {:ok, data} = add_tenant({:ok, data}, changeset)
+    {:ok, data, instructions}
   end
 
   defp add_tenant(other, _changeset) do
@@ -534,7 +545,7 @@ defmodule Ash.Actions.Update do
                     {mod, action_opts} = changeset.action.manual
 
                     if result = changeset.context[:private][:action_result] do
-                      result
+                      add_tenant(result, changeset)
                     else
                       changeset
                       |> Ash.Changeset.set_defaults(:update, true)
@@ -557,6 +568,7 @@ defmodule Ash.Actions.Update do
                           changeset.action
                         )
                       end)
+                      |> add_tenant(changeset)
                       |> manage_relationships(domain, changeset,
                         actor: opts[:actor],
                         authorize?: opts[:authorize?]
@@ -618,8 +630,10 @@ defmodule Ash.Actions.Update do
                               Ash.Filter.get_filter(changeset.resource, changeset.data)
 
                             changeset.resource
+                            |> Ash.Query.set_tenant(changeset.tenant)
                             |> Ash.Query.do_filter(changeset.filter)
                             |> Ash.Query.do_filter(record_filter)
+                            |> Ash.Query.as_of(Ash.Temporal.resolve_write_as_of(changeset.as_of))
                             |> Ash.Query.select(changeset.action_select)
                             |> Ash.Query.data_layer_query()
                             |> case do

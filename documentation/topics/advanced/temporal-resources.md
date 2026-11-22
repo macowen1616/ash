@@ -85,9 +85,10 @@ it for you, exactly as above:
   end
 ```
 
-Either way, it's marked `generated?`. You never pass a period in as action input. Its value
-comes from the instant of the write. If you declare it yourself, it can't allow nil, and it has
-to keep the `[from, to)` bounds.
+Either way, it's marked `generated?` and `always_select?`. You never pass a period in as action
+input. Its value comes from the instant of the write. Together with the primary key it
+identifies a version, so a select can't leave it out. If you declare it yourself, it can't allow
+nil, and it has to keep the `[from, to)` bounds.
 
 The migration generator handles the table for you. It emits the period column, a
 `PRIMARY KEY (id, valid_at WITHOUT OVERLAPS)` (a GiST exclusion that stops two rows of the same
@@ -143,6 +144,11 @@ As of an instant, a temporal write makes something true *from `as_of` onward*. T
   currently valid version down to `[lower, as_of)`. The record is gone from that instant on,
   and untouched before it. Destroy at the exact instant the version began, and it's removed
   entirely.
+- **A record's own instant is for loading, not writing.** A record keeps the instant it was
+  read or written at, so loading on it or reloading it sees that same moment. Writes don't use
+  it. Update or destroy a record without `as_of`, and the write happens now, on the version
+  valid now, even if you're holding an older one. To write at the record's instant, pass it:
+  `as_of: record.__metadata__.as_of`.
 
 ```elixir
 # create the current version, valid from now on

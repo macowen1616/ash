@@ -79,7 +79,8 @@ defmodule Ash.Signals.Graph do
 
   @doc """
   Renders entries from `build/1` as text, grouped by signal module, with the emitters and
-  listeners of each signal grouped by resource.
+  listeners of each signal grouped by resource, and the descriptions of signals, emits and
+  listeners under them.
   """
   @spec text([entry()]) :: String.t()
   def text(entries) do
@@ -91,7 +92,8 @@ defmodule Ash.Signals.Graph do
         |> Enum.flat_map(fn entry ->
           Enum.map(entry.emitters, &emitter_row/1) ++ Enum.map(entry.listeners, &listener_row/1)
         end)
-        |> Enum.reduce([0, 0], fn {_resource, [name, type, _details]}, [name_width, type_width] ->
+        |> Enum.reduce([0, 0], fn {_resource, [name, type, _details], _description},
+                                  [name_width, type_width] ->
           [max(name_width, String.length(name)), max(type_width, String.length(type))]
         end)
 
@@ -99,7 +101,7 @@ defmodule Ash.Signals.Graph do
         Enum.map_join(entries, "\n", fn entry ->
           """
 
-            #{inspect(entry.signal.name)} (#{entry.signal.phase})
+            #{inspect(entry.signal.name)} (#{entry.signal.phase})#{description(entry.signal.description, 4)}
               emitted by:
           #{rows(Enum.map(entry.emitters, &emitter_row/1), widths)}
               listened to by:
@@ -116,17 +118,27 @@ defmodule Ash.Signals.Graph do
   defp rows(rows, [name_width, type_width]) do
     rows
     |> Enum.chunk_by(&elem(&1, 0))
-    |> Enum.map_join("\n", fn [{resource, _} | _] = rows ->
+    |> Enum.map_join("\n", fn [{resource, _, _} | _] = rows ->
       lines =
-        Enum.map_join(rows, "\n", fn {_resource, [name, type, details]} ->
+        Enum.map_join(rows, "\n", fn {_resource, [name, type, details], description} ->
           [String.pad_trailing(name, name_width), String.pad_trailing(type, type_width), details]
           |> Enum.join("  ")
           |> String.trim_trailing()
-          |> then(&("        " <> &1))
+          |> then(&("        " <> &1 <> description(description, 10)))
         end)
 
       "      #{resource}\n#{lines}"
     end)
+  end
+
+  # Each line of the description, on lines of its own with the given indentation.
+  defp description(nil, _indent), do: ""
+
+  defp description(description, indent) do
+    description
+    |> String.trim()
+    |> String.split("\n")
+    |> Enum.map_join(&("\n" <> String.duplicate(" ", indent) <> String.trim_trailing(&1)))
   end
 
   defp emitter_row(emitter) do
@@ -135,7 +147,7 @@ defmodule Ash.Signals.Graph do
        inspect(emitter.action),
        to_string(emitter.action_type),
        Enum.join(emitter_details(emitter), ", ")
-     ]}
+     ], emitter.emit.description}
   end
 
   defp listener_row(listener) do
@@ -149,7 +161,7 @@ defmodule Ash.Signals.Graph do
       |> Enum.join(", ")
 
     {inspect(listener.resource),
-     [inspect(listener.name), to_string(listener.action_type), details]}
+     [inspect(listener.name), to_string(listener.action_type), details], listener.description}
   end
 
   defp emitter_details(emitter) do
@@ -163,8 +175,9 @@ defmodule Ash.Signals.Graph do
   Renders entries from `build/1` as a Mermaid flowchart.
 
   Each resource is a subgraph of the actions that emit or listen to signals, and each signal
-  module is a subgraph of its signals. Listeners with a delivery other than
-  `Ash.Signals.Delivery.Inline` are dotted lines, labelled with their delivery.
+  module is a subgraph of its signals. The actions of a resource with the same edges are one
+  node, listing them. Listeners with a delivery other than `Ash.Signals.Delivery.Inline` are
+  dotted lines, labelled with their delivery.
   """
   @spec mermaid([entry()]) :: String.t()
   def mermaid(entries) do
@@ -173,28 +186,55 @@ defmodule Ash.Signals.Graph do
       |> Enum.with_index()
       |> Map.new(fn {entry, index} -> {{entry.signal_module, entry.signal.name}, "s#{index}"} end)
 
-    actions =
-      entries
-      |> Enum.flat_map(fn entry ->
-        Enum.map(entry.emitters, &{&1.resource, &1.action}) ++
-          Enum.map(entry.listeners, &{&1.resource, &1.action})
-      end)
-      |> Enum.uniq()
-      |> Enum.sort()
+    # Each edge with the action at one end of it, and the rest of the edge, so that actions with
+    # the same edges can share a node.
+    edges =
+      Enum.flat_map(entries, fn entry ->
+        signal_id = signal_ids[{entry.signal_module, entry.signal.name}]
 
-    action_ids =
-      actions
-      |> Enum.with_index()
-      |> Map.new(fn {action, index} -> {action, "a#{index}"} end)
+        emitted =
+          Enum.map(entry.emitters, fn emitter ->
+            {{emitter.resource, emitter.action},
+             {:emits, signal_id, "-->", Enum.join(emitter_details(emitter), ", ")}}
+          end)
+
+        listened =
+          Enum.map(entry.listeners, fn listener ->
+            name = listener.action != listener.name && to_string(listener.name)
+            delivery = delivery(listener) && "via #{inspect(delivery(listener))}"
+            arrow = if delivery, do: "-.->", else: "-->"
+
+            {{listener.resource, listener.action},
+             {:listens, signal_id, arrow, Enum.join(Enum.filter([name, delivery], & &1), " ")}}
+          end)
+
+        emitted ++ listened
+      end)
+
+    nodes =
+      edges
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+      |> Enum.group_by(
+        fn {{resource, _action}, edges} -> {resource, edges |> Enum.uniq() |> Enum.sort()} end,
+        fn {{_resource, action}, _edges} -> action end
+      )
+      |> Enum.map(fn {{resource, _edges}, actions} -> {resource, Enum.sort(actions)} end)
+      |> Enum.sort()
+      |> Enum.with_index(fn {resource, actions}, index -> {resource, actions, "a#{index}"} end)
+
+    node_ids =
+      for {resource, actions, id} <- nodes, action <- actions, into: %{} do
+        {{resource, action}, id}
+      end
 
     resources =
-      actions
+      nodes
       |> Enum.chunk_by(&elem(&1, 0))
       |> Enum.with_index()
-      |> Enum.map(fn {[{resource, _} | _] = actions, index} ->
+      |> Enum.map(fn {[{resource, _, _} | _] = nodes, index} ->
         nodes =
-          Enum.map_join(actions, "\n", fn {_, action} = key ->
-            "    #{action_ids[key]}[#{label(action)}]"
+          Enum.map_join(nodes, "\n", fn {_, actions, id} ->
+            "    #{id}[#{label(Enum.join(actions, "<br/>"))}]"
           end)
 
         "  subgraph r#{index}[#{label(inspect(resource))}]\n#{nodes}\n  end"
@@ -221,39 +261,18 @@ defmodule Ash.Signals.Graph do
       end)
 
     edges =
-      Enum.flat_map(entries, fn entry ->
-        signal_id = signal_ids[{entry.signal_module, entry.signal.name}]
-
-        emitted =
-          Enum.map(entry.emitters, fn emitter ->
-            from = action_ids[{emitter.resource, emitter.action}]
-
-            case emitter_details(emitter) do
-              [] -> "  #{from} --> #{signal_id}"
-              details -> "  #{from} -->|#{label(Enum.join(details, ", "))}| #{signal_id}"
-            end
-          end)
-
-        listened =
-          Enum.map(entry.listeners, fn listener ->
-            to = action_ids[{listener.resource, listener.action}]
-
-            name = listener.action != listener.name && to_string(listener.name)
-            delivery = delivery(listener) && "via #{inspect(delivery(listener))}"
-            arrow = if delivery, do: "-.->", else: "-->"
-
-            case Enum.filter([name, delivery], & &1) do
-              [] -> "  #{signal_id} #{arrow} #{to}"
-              parts -> "  #{signal_id} #{arrow}|#{label(Enum.join(parts, " "))}| #{to}"
-            end
-          end)
-
-        emitted ++ listened
-      end)
+      edges
+      |> Enum.map(fn {action, edge} -> edge(node_ids[action], edge) end)
       |> Enum.uniq()
 
     Enum.join(["flowchart LR" | resources ++ signal_modules ++ edges], "\n") <> "\n"
   end
+
+  defp edge(node, {:emits, signal_id, arrow, text}), do: edge(node, arrow, text, signal_id)
+  defp edge(node, {:listens, signal_id, arrow, text}), do: edge(signal_id, arrow, text, node)
+
+  defp edge(from, arrow, "", to), do: "  #{from} #{arrow} #{to}"
+  defp edge(from, arrow, text, to), do: "  #{from} #{arrow}|#{label(text)}| #{to}"
 
   defp delivery(%{delivery: {Ash.Signals.Delivery.Inline, _}}), do: nil
   defp delivery(%{delivery: {delivery, _}}), do: delivery

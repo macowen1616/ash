@@ -10,13 +10,13 @@ defmodule Ash.MixProject do
   A declarative, extensible framework for building Elixir applications.
   """
 
-  @version "3.36.0"
+  @version "3.37.7"
 
   def project do
     [
       app: :ash,
       version: @version,
-      elixir: "~> 1.11",
+      elixir: "~> 1.17",
       consolidate_protocols: Mix.env() == :prod,
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),

@@ -21,8 +21,9 @@ defmodule Ash.Filter.Runtime do
 
   def filter_matches(_domain, records, nil, _opts), do: {:ok, records}
 
-  def filter_matches(domain, records, filter, opts) do
-    {records, parent} = load_records_and_parent(records, domain, opts[:parent], filter, opts)
+  def filter_matches(domain, original_records, filter, opts) do
+    {records, parent} =
+      load_records_and_parent(original_records, domain, opts[:parent], filter, opts)
 
     # Every record shares a resource, so hydrate the filter and compute its
     # relationship paths once rather than once per record.
@@ -44,13 +45,17 @@ defmodule Ash.Filter.Runtime do
       relationship_paths = Ash.Filter.relationship_paths(filter)
       opts = Keyword.put(opts, :parent, parent)
 
-      Enum.reduce_while(records, {:ok, []}, fn record, {:ok, records} ->
+      # Relationships are loaded without authorization to evaluate the filter, so the
+      # records that match are returned as they were given.
+      records
+      |> Enum.zip(original_records)
+      |> Enum.reduce_while({:ok, []}, fn {record, original_record}, {:ok, records} ->
         case matches(record, filter, relationship_paths, opts) do
           {:ok, falsey} when falsey in [false, nil] ->
             {:cont, {:ok, records}}
 
           {:ok, _} ->
-            {:cont, {:ok, [record | records]}}
+            {:cont, {:ok, [original_record | records]}}
 
           {:error, error} ->
             {:halt, {:error, error}}
@@ -369,6 +374,38 @@ defmodule Ash.Filter.Runtime do
     end
   end
 
+  @doc false
+  def load_for_expressions(records, expressions, resource, domain, actor, tenant) do
+    refs_to_load =
+      expressions
+      |> Enum.flat_map(&paths_to_load(&1, resource, records))
+      |> Enum.uniq()
+
+    case refs_to_load do
+      [] ->
+        {:ok, records}
+
+      refs_to_load ->
+        load =
+          resource
+          |> load_all(refs_to_load)
+          |> Ash.Query.set_context(%{private: %{internal?: true}})
+
+        Ash.load(records, load,
+          domain: domain,
+          authorize?: false,
+          tenant: tenant,
+          actor: actor
+        )
+    end
+  end
+
+  @doc false
+  def runtime_calculation_name(%Ash.Query.Calculation{} = calculation) do
+    {__MODULE__,
+     {calculation.name, calculation.module, calculation.opts, calculation.context.arguments}}
+  end
+
   # Relationships referenced by refs are loaded along with the referenced field.
   # `exists/2` expressions whose inner expression contains no refs (e.g `exists(posts, true)`)
   # still need their relationship path loaded in order to be evaluated.
@@ -376,7 +413,14 @@ defmodule Ash.Filter.Runtime do
     ref_paths =
       expression
       |> Ash.Filter.list_refs(false, false, true)
-      |> Enum.map(&(&1.relationship_path ++ [&1.attribute]))
+      |> Enum.map(fn
+        %{attribute: %Ash.Query.Calculation{} = calculation} = ref ->
+          ref.relationship_path ++
+            [%{calculation | name: runtime_calculation_name(calculation), load: nil}]
+
+        ref ->
+          ref.relationship_path ++ [ref.attribute]
+      end)
 
     exists_paths =
       expression
@@ -903,13 +947,14 @@ defmodule Ash.Filter.Runtime do
            relationship_path: relationship_path,
            resource: resource,
            combinations?: combinations?,
-           attribute: %Ash.Query.Calculation{
-             module: module,
-             opts: opts,
-             name: name,
-             load: load,
-             context: context
-           }
+           attribute:
+             %Ash.Query.Calculation{
+               module: module,
+               opts: opts,
+               name: name,
+               load: load,
+               context: context
+             } = calculation
          },
          record,
          parent,
@@ -932,28 +977,36 @@ defmodule Ash.Filter.Runtime do
           {:ok, nil}
 
         [record | _] ->
-          if load do
-            case Map.fetch(record || %{}, load) do
-              :error ->
-                :unknown
+          calculations = Map.get(record || %{}, :calculations, %{})
 
-              {:ok, %Ash.NotLoaded{}} ->
-                :unknown
+          case Map.fetch(calculations, runtime_calculation_name(calculation)) do
+            {:ok, value} ->
+              {:ok, value}
 
-              {:ok, %Ash.ForbiddenField{}} ->
-                :unknown
+            :error ->
+              if load do
+                case Map.fetch(record || %{}, load) do
+                  :error ->
+                    :unknown
 
-              {:ok, other} ->
-                {:ok, other}
-            end
-          else
-            case Map.fetch(Map.get(record || %{}, :calculations, %{}), name) do
-              {:ok, value} ->
-                {:ok, value}
+                  {:ok, %Ash.NotLoaded{}} ->
+                    :unknown
 
-              :error ->
-                :unknown
-            end
+                  {:ok, %Ash.ForbiddenField{}} ->
+                    :unknown
+
+                  {:ok, other} ->
+                    {:ok, other}
+                end
+              else
+                case Map.fetch(calculations, name) do
+                  {:ok, value} ->
+                    {:ok, value}
+
+                  :error ->
+                    :unknown
+                end
+              end
           end
       end
 
@@ -983,6 +1036,14 @@ defmodule Ash.Filter.Runtime do
             })
 
           with {:ok, hydrated} <- hydrated do
+            {_calculation, hydrated} =
+              Ash.Actions.Read.RelatedAuthorization.authorize_calculation(
+                calculation,
+                hydrated,
+                resource,
+                parent_stack: parent_stack(parent)
+              )
+
             hydrated
             |> Ash.Filter.prefix_refs(relationship_path)
             |> resolve_expr(record, parent, resource, unknown_on_unknown_refs?)

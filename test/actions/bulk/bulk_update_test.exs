@@ -212,6 +212,19 @@ defmodule Ash.Test.Actions.BulkUpdateTest do
     end
   end
 
+  defmodule TitleIsLocked do
+    @moduledoc false
+    use Ash.Policy.SimpleCheck
+
+    def describe(_opts), do: "the title is locked"
+    def requires_original_data?(_authorizer, _opts), do: true
+
+    def match?(_actor, %{changeset: %Ash.Changeset{data: post}}, _opts),
+      do: post.title == "locked"
+
+    def match?(_actor, _context, _opts), do: false
+  end
+
   defmodule AtomicOnlyValidation do
     use Ash.Resource.Validation
 
@@ -260,6 +273,19 @@ defmodule Ash.Test.Actions.BulkUpdateTest do
     end
   end
 
+  defmodule ValidateCodeArgument do
+    @moduledoc false
+    use Ash.Resource.Validation
+
+    @impl true
+    def validate(changeset, _, _) do
+      case Ash.Changeset.get_argument(changeset, :code) do
+        "bad" -> {:error, field: :code, message: "code cannot be bad"}
+        _ -> :ok
+      end
+    end
+  end
+
   defmodule PostWithBulkValidationOrdering do
     @moduledoc false
     use Ash.Resource,
@@ -278,6 +304,13 @@ defmodule Ash.Test.Actions.BulkUpdateTest do
         primary? true
         accept [:title]
         require_atomic? false
+      end
+
+      update :update_with_code_argument do
+        accept [:title]
+        argument :code, :string
+        require_atomic? false
+        validate ValidateCodeArgument
       end
     end
 
@@ -331,6 +364,8 @@ defmodule Ash.Test.Actions.BulkUpdateTest do
       update :update_manual do
         manual ManualUpdate
       end
+
+      update :update_unless_locked
 
       update :update_with_change do
         require_atomic? false
@@ -450,6 +485,14 @@ defmodule Ash.Test.Actions.BulkUpdateTest do
         change ConditionalAfterActionErrorWithAfterTransaction
       end
 
+      read :forbidden_read
+
+      update :set_forbidden_parent do
+        require_atomic? false
+        argument :parent_id, :uuid, allow_nil?: false
+        change manage_relationship(:parent_id, :forbidden_parent, type: :append)
+      end
+
       update :remove_related_posts do
         require_atomic? false
 
@@ -494,8 +537,18 @@ defmodule Ash.Test.Actions.BulkUpdateTest do
     end
 
     policies do
+      policy action(:forbidden_read) do
+        access_type :strict
+        forbid_if always()
+      end
+
       policy action(:update_with_policy) do
         authorize_if context_equals(:authorize?, true)
+      end
+
+      policy action(:update_unless_locked) do
+        forbid_if TitleIsLocked
+        authorize_if always()
       end
 
       policy action(:update_with_policy_without_requiring_actor) do
@@ -531,11 +584,34 @@ defmodule Ash.Test.Actions.BulkUpdateTest do
     relationships do
       belongs_to :author, Author, public?: true
 
+      belongs_to :forbidden_parent, __MODULE__, read_action: :forbidden_read
+
       many_to_many :related_posts, __MODULE__,
         through: PostLink,
         source_attribute_on_join_resource: :source_post_id,
         destination_attribute_on_join_resource: :destination_post_id,
         public?: true
+    end
+  end
+
+  defmodule MnesiaComment do
+    @moduledoc false
+    use Ash.Resource,
+      domain: Domain,
+      data_layer: Ash.DataLayer.Mnesia,
+      notifiers: [Notifier]
+
+    attributes do
+      uuid_primary_key :id
+      attribute :body, :string, public?: true
+    end
+
+    relationships do
+      belongs_to :post, Ash.Test.Actions.BulkUpdateTest.MnesiaPost, public?: true
+    end
+
+    actions do
+      defaults [:read, create: [:body, :post_id]]
     end
   end
 
@@ -556,9 +632,28 @@ defmodule Ash.Test.Actions.BulkUpdateTest do
       timestamps()
     end
 
+    relationships do
+      has_many :comments, MnesiaComment, destination_attribute: :post_id, public?: true
+    end
+
+    code_interface do
+      define :add_comments, args: [:comments]
+    end
+
     actions do
       default_accept :*
       defaults [:read, :destroy, :create, :update]
+
+      update :add_comments do
+        require_atomic? false
+        touches_resources [MnesiaComment]
+        argument :comments, {:array, :map}, allow_nil?: false
+        change manage_relationship(:comments, :comments, type: :create)
+
+        change after_action(fn _changeset, record, _context ->
+                 if record.title == "fail", do: {:error, "boom"}, else: {:ok, record}
+               end)
+      end
 
       update :error_in_before_action_on_title2 do
         atomic_upgrade? false
@@ -732,7 +827,7 @@ defmodule Ash.Test.Actions.BulkUpdateTest do
     end)
 
     capture_log(fn ->
-      Ash.DataLayer.Mnesia.start(Domain, [MnesiaPost])
+      Ash.DataLayer.Mnesia.start(Domain, [MnesiaPost, MnesiaComment])
     end)
 
     :ok
@@ -761,6 +856,51 @@ defmodule Ash.Test.Actions.BulkUpdateTest do
     Enum.each(records, fn record ->
       refute Map.has_key?(record.__metadata__, :bulk_action_ref)
     end)
+  end
+
+  test "atomic updates that return records leave nothing in the process dictionary" do
+    Ash.bulk_create!([%{title: "title1"}, %{title: "title2"}], Post, :create, authorize?: false)
+
+    for strategy <- [:atomic, :atomic_batches] do
+      assert %Ash.BulkResult{status: :success, records: [_, _]} =
+               Ash.bulk_update!(Post, :update, %{title2: "updated value"},
+                 strategy: strategy,
+                 return_records?: true,
+                 authorize?: false
+               )
+
+      assert leftover_bulk_keys() == []
+    end
+  end
+
+  defp leftover_bulk_keys do
+    Enum.filter(
+      Process.get_keys(),
+      &match?({key, _} when key in [:any_success?, :bulk_notifications], &1)
+    )
+  end
+
+  test "the `filter` option skips records that no longer match it with the stream strategy" do
+    [unchanged, changed] =
+      Ash.bulk_create!([%{title: "title"}, %{title: "title"}], Post, :create,
+        return_records?: true,
+        authorize?: false
+      ).records
+
+    Ash.update!(changed, %{title: "changed"}, authorize?: false)
+
+    assert %Ash.BulkResult{records: [%{id: id}]} =
+             Ash.bulk_update!([unchanged, changed], :update, %{title2: "updated value"},
+               resource: Post,
+               strategy: :stream,
+               filter: [title: "title"],
+               return_records?: true,
+               return_errors?: true,
+               authorize?: false
+             )
+
+    assert id == unchanged.id
+    assert Ash.get!(Post, changed.id, authorize?: false).title2 == nil
   end
 
   test "sends notifications" do
@@ -974,6 +1114,60 @@ defmodule Ash.Test.Actions.BulkUpdateTest do
                return_errors?: true,
                authorize?: false
              )
+  end
+
+  # Ets has no transactions and Mnesia has no `update_query`, so no data layer
+  # here runs an atomic bulk update inside a transaction. A queued notification
+  # of a Mnesia resource gets the same result: it cannot be sent inside the
+  # Mnesia transaction, so the atomic update reports it as missed.
+  test "an atomic bulk update given the action's name can report missed notifications" do
+    post = Ash.create!(Post, %{title: "title1"}, authorize?: false)
+
+    missed = %Ash.Notifier.Notification{resource: MnesiaPost, domain: Domain, for: [Notifier]}
+
+    log =
+      capture_log(fn ->
+        assert {:atomic, %Ash.BulkResult{status: :success}} =
+                 :mnesia.transaction(fn ->
+                   Ash.Actions.Helpers.queue_notifications([missed])
+
+                   Post
+                   |> Ash.Query.filter(id == ^post.id)
+                   |> Ash.bulk_update(:update, %{title2: "updated value"},
+                     strategy: :atomic,
+                     notify?: true,
+                     authorize?: false
+                   )
+                 end)
+      end)
+
+    assert log =~ "Missed 1 notifications in action"
+    assert log =~ "BulkUpdateTest.Post.update"
+  end
+
+  test "an atomic bulk update does not report a notification for no notifiers as missed" do
+    post = Ash.create!(Post, %{title: "title1"}, authorize?: false)
+
+    for_no_notifiers = %Ash.Notifier.Notification{resource: MnesiaPost, domain: Domain, for: []}
+    missed = %{for_no_notifiers | for: [Notifier]}
+
+    log =
+      capture_log(fn ->
+        assert {:atomic, %Ash.BulkResult{status: :success, notifications: [^missed]}} =
+                 :mnesia.transaction(fn ->
+                   Ash.Actions.Helpers.queue_notifications([for_no_notifiers, missed])
+
+                   Post
+                   |> Ash.Query.filter(id == ^post.id)
+                   |> Ash.bulk_update(:update, %{title2: "updated value"},
+                     strategy: :atomic,
+                     notify?: true,
+                     authorize?: false
+                   )
+                 end)
+      end)
+
+    assert log =~ "Missed 1 notifications in action"
   end
 
   test "context provided in opts is set on changesets, query context is not" do
@@ -1509,6 +1703,79 @@ defmodule Ash.Test.Actions.BulkUpdateTest do
       end)
     end
 
+    test "a policy requiring the original data is checked against each record of a query" do
+      Ash.bulk_create!([%{title: "unlocked"}, %{title: "locked"}], Post, :create,
+        authorize?: false
+      )
+
+      assert %Ash.BulkResult{status: :success, records: [%{title2: "updated value"}]} =
+               Post
+               |> Ash.Query.filter(title == "unlocked")
+               |> Ash.bulk_update(:update_unless_locked, %{title2: "updated value"},
+                 strategy: [:atomic, :atomic_batches, :stream],
+                 authorize?: true,
+                 return_records?: true,
+                 return_errors?: true
+               )
+
+      assert %Ash.BulkResult{status: :error, errors: [%Ash.Error.Forbidden{}]} =
+               Post
+               |> Ash.Query.filter(title == "locked")
+               |> Ash.bulk_update(:update_unless_locked, %{title2: "updated value"},
+                 strategy: [:atomic, :atomic_batches, :stream],
+                 authorize?: true,
+                 return_errors?: true
+               )
+    end
+
+    test "a policy requiring the original data needs the stream strategy for a query" do
+      Ash.bulk_create!([%{title: "unlocked"}], Post, :create, authorize?: false)
+
+      assert %Ash.BulkResult{status: :error, errors: [error]} =
+               Ash.bulk_update(Post, :update_unless_locked, %{title2: "updated value"},
+                 strategy: [:atomic, :atomic_batches],
+                 authorize?: true,
+                 return_errors?: true
+               )
+
+      assert Exception.message(error) =~ "had no matching bulk strategy that could be used"
+      assert Exception.message(error) =~ "Could not use `:stream`: Not in requested strategies"
+    end
+
+    test "a policy requiring the original data is checked against each record given" do
+      %Ash.BulkResult{records: [unlocked, locked]} =
+        Ash.bulk_create!([%{title: "unlocked"}, %{title: "locked"}], Post, :create,
+          authorize?: false,
+          return_records?: true,
+          sorted?: true
+        )
+
+      assert %Ash.BulkResult{status: :success, records: [%{title2: "updated value"}]} =
+               Ash.bulk_update([unlocked], :update_unless_locked, %{title2: "updated value"},
+                 strategy: [:atomic, :atomic_batches, :stream],
+                 authorize?: true,
+                 return_records?: true,
+                 return_errors?: true
+               )
+
+      assert %Ash.BulkResult{status: :error, errors: [%Ash.Error.Forbidden{}]} =
+               Ash.bulk_update([locked], :update_unless_locked, %{title2: "updated value"},
+                 strategy: [:atomic, :atomic_batches, :stream],
+                 authorize?: true,
+                 return_errors?: true
+               )
+
+      assert %Ash.BulkResult{status: :error, errors: [error]} =
+               Ash.bulk_update([locked], :update_unless_locked, %{title2: "updated value"},
+                 authorize?: true,
+                 return_errors?: true
+               )
+
+      assert Exception.message(error) =~ "Could not use `:stream`: Not in requested strategies"
+
+      assert is_nil(Ash.get!(Post, locked.id, authorize?: false).title2)
+    end
+
     test "respects filter when using atomic" do
       assert %Ash.BulkResult{
                records: [
@@ -1554,6 +1821,30 @@ defmodule Ash.Test.Actions.BulkUpdateTest do
                return_errors?: true,
                authorize?: false
              )
+  end
+
+  test "streams instead of using atomic batches when the read action adds hooks" do
+    Ash.bulk_create!([%{title: "title"}], Post, :create, authorize?: false)
+
+    assert %Ash.BulkResult{status: :success, records: [%{title2: "updated value"}]} =
+             Ash.bulk_update(Post, :update, %{title2: "updated value"},
+               read_action: :query_with_after_action,
+               strategy: [:atomic, :atomic_batches, :stream],
+               authorize?: false,
+               return_records?: true,
+               return_errors?: true
+             )
+
+    assert %Ash.BulkResult{status: :error, errors: [error]} =
+             Ash.bulk_update(Post, :update, %{title2: "updated value"},
+               read_action: :query_with_after_action,
+               strategy: [:atomic, :atomic_batches],
+               authorize?: false,
+               return_errors?: true
+             )
+
+    assert Exception.message(error) =~
+             "Could not use `:atomic_batches`: cannot atomically update a query if it has `after_action` hooks"
   end
 
   test "stop_on_error? stops processing on invalid changesets" do
@@ -2288,6 +2579,128 @@ defmodule Ash.Test.Actions.BulkUpdateTest do
     end
   end
 
+  describe "notifications from rolled-back managed relationships" do
+    test "single-record code interface updates discard rolled-back relationship notifications" do
+      post = Ash.create!(MnesiaPost, %{title: "fail"}, notify?: false)
+
+      assert {:error, _} = MnesiaPost.add_comments(post, [%{body: "rolled back"}])
+      assert [] = Ash.read!(MnesiaComment)
+      refute_received {:notification, %{resource: MnesiaComment}}
+    end
+
+    test "code interface updates by id discard rolled-back relationship notifications" do
+      post = Ash.create!(MnesiaPost, %{title: "fail"}, notify?: false)
+
+      assert {:error, _} = MnesiaPost.add_comments(post.id, [%{body: "rolled back"}])
+      assert [] = Ash.read!(MnesiaComment)
+      refute_received {:notification, %{resource: MnesiaComment}}
+    end
+
+    test "bulk updates do not send notifications from a rolled-back batch" do
+      post = Ash.create!(MnesiaPost, %{title: "fail"}, notify?: false)
+
+      result = bulk_update_with_comments([post], notify?: true)
+
+      assert result.status == :error
+      assert [] = Ash.read!(MnesiaComment)
+      refute_received {:notification, %{resource: MnesiaComment}}
+    end
+
+    test "bulk updates do not return notifications from a rolled-back batch" do
+      post = Ash.create!(MnesiaPost, %{title: "fail"}, notify?: false)
+
+      result = bulk_update_with_comments([post], return_notifications?: true)
+
+      assert result.status == :error
+      assert result.notifications == []
+      assert [] = Ash.read!(MnesiaComment)
+      refute_received {:notification, %{resource: MnesiaComment}}
+    end
+
+    test "a failed batch preserves returned notifications from earlier committed batches" do
+      successful = Ash.create!(MnesiaPost, %{title: "success"}, notify?: false)
+      failing = Ash.create!(MnesiaPost, %{title: "fail"}, notify?: false)
+
+      result =
+        bulk_update_with_comments([successful, failing],
+          batch_size: 1,
+          return_notifications?: true
+        )
+
+      assert result.error_count == 1
+      assert [%{post_id: post_id, id: comment_id}] = Ash.read!(MnesiaComment)
+      assert post_id == successful.id
+
+      assert [%{resource: MnesiaComment, data: %{id: ^comment_id}}] =
+               Enum.filter(result.notifications, &(&1.resource == MnesiaComment))
+
+      refute_received {:notification, %{resource: MnesiaComment}}
+    end
+
+    test "a later failure discards relationship notifications for the entire batch" do
+      successful = Ash.create!(MnesiaPost, %{title: "success"}, notify?: false)
+      failing = Ash.create!(MnesiaPost, %{title: "fail"}, notify?: false)
+
+      result = bulk_update_with_comments([successful, failing], batch_size: 2, notify?: true)
+
+      assert result.error_count == 2
+      assert [] = Ash.read!(MnesiaComment)
+      refute_received {:notification, %{resource: MnesiaComment}}
+    end
+
+    test "streamed results do not send notifications from a rolled-back batch" do
+      post = Ash.create!(MnesiaPost, %{title: "fail"}, notify?: false)
+
+      results =
+        [post]
+        |> bulk_update_with_comments(return_stream?: true, notify?: true)
+        |> Enum.to_list()
+
+      assert [{:error, _}] = results
+      assert [] = Ash.read!(MnesiaComment)
+      refute_received {:notification, %{resource: MnesiaComment}}
+    end
+
+    test "successful batches send notifications for committed relationships" do
+      post = Ash.create!(MnesiaPost, %{title: "success"}, notify?: false)
+
+      result = bulk_update_with_comments([post], notify?: true)
+
+      assert result.status == :success
+      assert [%{id: comment_id}] = Ash.read!(MnesiaComment)
+      assert_received {:notification, %{resource: MnesiaComment, data: %{id: ^comment_id}}}
+    end
+
+    test "notifications are preserved when rollback is disabled and relationships persist" do
+      post = Ash.create!(MnesiaPost, %{title: "fail"}, notify?: false)
+
+      result = bulk_update_with_comments([post], rollback_on_error?: false, notify?: true)
+
+      assert result.status == :error
+      assert [%{id: comment_id}] = Ash.read!(MnesiaComment)
+      assert_received {:notification, %{resource: MnesiaComment, data: %{id: ^comment_id}}}
+    end
+  end
+
+  defp bulk_update_with_comments(posts, opts) do
+    Ash.bulk_update(
+      posts,
+      :add_comments,
+      %{comments: [%{body: "created by relationship"}]},
+      Keyword.merge(
+        [
+          resource: MnesiaPost,
+          strategy: [:stream],
+          transaction: :batch,
+          stop_on_error?: false,
+          return_errors?: true,
+          authorize?: false
+        ],
+        opts
+      )
+    )
+  end
+
   describe "bulk update with manage_relationship" do
     test "manage_relationship changes are applied in bulk updates" do
       related_post1 = Ash.create!(Post, %{title: "Related 1"})
@@ -2319,6 +2732,27 @@ defmodule Ash.Test.Actions.BulkUpdateTest do
       updated_post = Ash.load!(updated_post, :related_posts)
       assert length(updated_post.related_posts) == 1
       assert hd(updated_post.related_posts).id == related_post2.id
+    end
+
+    test "a failing managed belongs_to returns its error when notifying" do
+      parent = Ash.create!(Post, %{title: "parent"})
+
+      # loading the current parent fails, as its read action is forbidden
+      post =
+        Post
+        |> Ash.Changeset.for_create(:create, %{title: "post"})
+        |> Ash.Changeset.force_change_attribute(:forbidden_parent_id, parent.id)
+        |> Ash.create!()
+
+      assert %Ash.BulkResult{status: :error, errors: [%Ash.Error.Forbidden{}]} =
+               Post
+               |> Ash.Query.filter(id == ^post.id)
+               |> Ash.bulk_update(:set_forbidden_parent, %{parent_id: post.id},
+                 strategy: :stream,
+                 notify?: true,
+                 return_errors?: true,
+                 authorize?: true
+               )
     end
 
     test "manage_relationship falls back to stream when atomic requested" do
@@ -2472,7 +2906,14 @@ defmodule Ash.Test.Actions.BulkUpdateTest do
                  authorize?: false
                )
 
-      assert Exception.message(error) =~ "status cannot be bad"
+      assert %Ash.Error.Invalid{
+               errors: [
+                 %Ash.Error.Changes.InvalidAttribute{
+                   field: :status,
+                   message: "status cannot be bad"
+                 }
+               ]
+             } = error
     end
 
     test "before_action? global validation rejects with correct error" do
@@ -2492,7 +2933,38 @@ defmodule Ash.Test.Actions.BulkUpdateTest do
                  authorize?: false
                )
 
-      assert Exception.message(error) =~ "status cannot be ugly"
+      assert %Ash.Error.Invalid{
+               errors: [
+                 %Ash.Error.Changes.InvalidAttribute{
+                   field: :status,
+                   message: "status cannot be ugly"
+                 }
+               ]
+             } = error
+    end
+
+    test "keyword errors on arguments become InvalidArgument" do
+      post =
+        PostWithBulkValidationOrdering
+        |> Ash.Changeset.for_create(:create, %{title: "initial"})
+        |> Ash.create!()
+
+      assert %Ash.BulkResult{status: :error, errors: [error]} =
+               Ash.bulk_update(
+                 [post],
+                 :update_with_code_argument,
+                 %{title: "good", code: "bad"},
+                 resource: PostWithBulkValidationOrdering,
+                 return_errors?: true,
+                 strategy: :stream,
+                 authorize?: false
+               )
+
+      assert %Ash.Error.Invalid{
+               errors: [
+                 %Ash.Error.Changes.InvalidArgument{field: :code, message: "code cannot be bad"}
+               ]
+             } = error
     end
 
     test "before_action? validation falls back from atomic to stream strategy" do

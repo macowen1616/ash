@@ -429,6 +429,11 @@ defmodule Ash.Resource.Dsl do
       "change {MyCustomChange, :foo}"
     ],
     no_depend_modules: [:change],
+    imports: [
+      Ash.Resource.Validation.Builtins,
+      Ash.Resource.Change.Builtins,
+      Ash.Expr
+    ],
     target: Ash.Resource.Change,
     schema: Ash.Resource.Change.action_schema(),
     args: [:change]
@@ -524,7 +529,7 @@ defmodule Ash.Resource.Dsl do
     name: :pipe_through,
     describe: """
     References one or more pipelines to apply to this action.
-    Pipeline entities are prepended before the action's own changes/preparations.
+    Pipeline entities are inserted at the position of the `pipe_through` declaration, in order with the action's own changes/preparations.
     """,
     examples: [
       """
@@ -565,7 +570,11 @@ defmodule Ash.Resource.Dsl do
         where: [changing(:status)]
       """,
       "emit MyApp.Shop.Signals, :order_shipped, phase: :after_transaction",
-      "emit MyApp.Shop.Signals, :order_placed, dynamic?: true"
+      """
+      emit MyApp.Shop.Signals, :order_placed,
+        dynamic?: true,
+        description: "When the order is paid in full."
+      """
     ],
     target: Ash.Resource.Actions.Emit,
     schema: Ash.Resource.Actions.Emit.schema(),
@@ -627,6 +636,7 @@ defmodule Ash.Resource.Dsl do
     target: Ash.Resource.Preparation,
     schema: Ash.Resource.Preparation.schema(),
     no_depend_modules: [:preparation],
+    imports: [Ash.Resource.Preparation.Builtins, Ash.Resource.Validation.Builtins, Ash.Expr],
     args: [:preparation]
   }
 
@@ -1961,6 +1971,7 @@ defmodule Ash.Resource.Dsl do
     Ash.Resource.Verifiers.ValidateThroughRelationships,
     Ash.Resource.Verifiers.NoReservedFieldNames,
     Ash.Resource.Verifiers.ValidateAccept,
+    Ash.Resource.Verifiers.ValidateAttributeArgumentValidations,
     Ash.Resource.Verifiers.ValidateActionTypesSupported,
     Ash.Resource.Verifiers.ValidateAggregatesSupported,
     Ash.Resource.Verifiers.ValidateEagerIdentities,

@@ -1032,7 +1032,7 @@ argument :password_confirmation, :string
 | [`allow_nil?`](#actions-action-argument-allow_nil?){: #actions-action-argument-allow_nil? } | `boolean` | `true` | Whether or not the argument value may be nil (or may be not provided). If nil value is given error is raised. |
 | [`public?`](#actions-action-argument-public?){: #actions-action-argument-public? } | `boolean` | `true` | Whether or not the argument should appear in public interfaces |
 | [`sensitive?`](#actions-action-argument-sensitive?){: #actions-action-argument-sensitive? } | `boolean` | `false` | Whether or not the argument value contains sensitive information, like PII(Personally Identifiable Information). See the [security guide](/documentation/topics/security/sensitive-data.md) for more. |
-| [`default`](#actions-action-argument-default){: #actions-action-argument-default } | `any` |  | The default value for the argument to take. It can be a zero argument function e.g `&MyMod.my_fun/0` or a value |
+| [`default`](#actions-action-argument-default){: #actions-action-argument-default } | `any` |  | The default value for the argument to take when it is not provided. An explicitly provided `nil` is not replaced by the default. It can be a zero argument function e.g `&MyMod.my_fun/0` or a value |
 
 
 
@@ -1136,7 +1136,7 @@ pipe_through names
 
 
 References one or more pipelines to apply to this action.
-Pipeline entities are prepended before the action's own changes/preparations.
+Pipeline entities are inserted at the position of the `pipe_through` declaration, in order with the action's own changes/preparations.
 
 
 
@@ -1210,7 +1210,10 @@ emit MyApp.Shop.Signals, :order_shipped, phase: :after_transaction
 ```
 
 ```
-emit MyApp.Shop.Signals, :order_placed, dynamic?: true
+emit MyApp.Shop.Signals, :order_placed,
+  dynamic?: true,
+  description: "When the order is paid in full."
+
 ```
 
 
@@ -1230,6 +1233,7 @@ emit MyApp.Shop.Signals, :order_placed, dynamic?: true
 | [`values`](#actions-action-emit-values){: #actions-action-emit-values } | `keyword` | `[]` | Signal fields to set to the given values, which may be templates like `arg(:reason)` or `actor(:id)`, or for update and destroy actions `previous(:field)`, the value of a field before the action. |
 | [`where`](#actions-action-emit-where){: #actions-action-emit-where } | `(any, any -> any) \| module \| list((any, any -> any) \| module)` | `[]` | Validations that must pass for the signal to be emitted. |
 | [`dynamic?`](#actions-action-emit-dynamic?){: #actions-action-emit-dynamic? } | `boolean` | `false` | Declares that the action emits the signal from your own code, with `Ash.Signals.emit/5` or `Ash.Signals.emit_many/5`, instead of emitting it. Use it when building the signal needs more than `fields` and `values` can express. |
+| [`description`](#actions-action-emit-description){: #actions-action-emit-description } | `String.t` |  | A description of when and why the action emits the signal. Especially useful with `dynamic?: true`, where the code that emits the signal decides when it is emitted. |
 
 
 
@@ -1405,7 +1409,7 @@ pipe_through names
 
 
 References one or more pipelines to apply to this action.
-Pipeline entities are prepended before the action's own changes/preparations.
+Pipeline entities are inserted at the position of the `pipe_through` declaration, in order with the action's own changes/preparations.
 
 
 
@@ -1479,7 +1483,10 @@ emit MyApp.Shop.Signals, :order_shipped, phase: :after_transaction
 ```
 
 ```
-emit MyApp.Shop.Signals, :order_placed, dynamic?: true
+emit MyApp.Shop.Signals, :order_placed,
+  dynamic?: true,
+  description: "When the order is paid in full."
+
 ```
 
 
@@ -1499,6 +1506,7 @@ emit MyApp.Shop.Signals, :order_placed, dynamic?: true
 | [`values`](#actions-create-emit-values){: #actions-create-emit-values } | `keyword` | `[]` | Signal fields to set to the given values, which may be templates like `arg(:reason)` or `actor(:id)`, or for update and destroy actions `previous(:field)`, the value of a field before the action. |
 | [`where`](#actions-create-emit-where){: #actions-create-emit-where } | `(any, any -> any) \| module \| list((any, any -> any) \| module)` | `[]` | Validations that must pass for the signal to be emitted. |
 | [`dynamic?`](#actions-create-emit-dynamic?){: #actions-create-emit-dynamic? } | `boolean` | `false` | Declares that the action emits the signal from your own code, with `Ash.Signals.emit/5` or `Ash.Signals.emit_many/5`, instead of emitting it. Use it when building the signal needs more than `fields` and `values` can express. |
+| [`description`](#actions-create-emit-description){: #actions-create-emit-description } | `String.t` |  | A description of when and why the action emits the signal. Especially useful with `dynamic?: true`, where the code that emits the signal decides when it is emitted. |
 
 
 
@@ -1541,7 +1549,7 @@ argument :password_confirmation, :string
 | [`allow_nil?`](#actions-create-argument-allow_nil?){: #actions-create-argument-allow_nil? } | `boolean` | `true` | Whether or not the argument value may be nil (or may be not provided). If nil value is given error is raised. |
 | [`public?`](#actions-create-argument-public?){: #actions-create-argument-public? } | `boolean` | `true` | Whether or not the argument should appear in public interfaces |
 | [`sensitive?`](#actions-create-argument-sensitive?){: #actions-create-argument-sensitive? } | `boolean` | `false` | Whether or not the argument value contains sensitive information, like PII(Personally Identifiable Information). See the [security guide](/documentation/topics/security/sensitive-data.md) for more. |
-| [`default`](#actions-create-argument-default){: #actions-create-argument-default } | `any` |  | The default value for the argument to take. It can be a zero argument function e.g `&MyMod.my_fun/0` or a value |
+| [`default`](#actions-create-argument-default){: #actions-create-argument-default } | `any` |  | The default value for the argument to take when it is not provided. An explicitly provided `nil` is not replaced by the default. It can be a zero argument function e.g `&MyMod.my_fun/0` or a value |
 
 
 
@@ -1692,7 +1700,7 @@ argument :password_confirmation, :string
 | [`allow_nil?`](#actions-read-argument-allow_nil?){: #actions-read-argument-allow_nil? } | `boolean` | `true` | Whether or not the argument value may be nil (or may be not provided). If nil value is given error is raised. |
 | [`public?`](#actions-read-argument-public?){: #actions-read-argument-public? } | `boolean` | `true` | Whether or not the argument should appear in public interfaces |
 | [`sensitive?`](#actions-read-argument-sensitive?){: #actions-read-argument-sensitive? } | `boolean` | `false` | Whether or not the argument value contains sensitive information, like PII(Personally Identifiable Information). See the [security guide](/documentation/topics/security/sensitive-data.md) for more. |
-| [`default`](#actions-read-argument-default){: #actions-read-argument-default } | `any` |  | The default value for the argument to take. It can be a zero argument function e.g `&MyMod.my_fun/0` or a value |
+| [`default`](#actions-read-argument-default){: #actions-read-argument-default } | `any` |  | The default value for the argument to take when it is not provided. An explicitly provided `nil` is not replaced by the default. It can be a zero argument function e.g `&MyMod.my_fun/0` or a value |
 
 
 
@@ -1796,7 +1804,7 @@ pipe_through names
 
 
 References one or more pipelines to apply to this action.
-Pipeline entities are prepended before the action's own changes/preparations.
+Pipeline entities are inserted at the position of the `pipe_through` declaration, in order with the action's own changes/preparations.
 
 
 
@@ -2108,7 +2116,7 @@ pipe_through names
 
 
 References one or more pipelines to apply to this action.
-Pipeline entities are prepended before the action's own changes/preparations.
+Pipeline entities are inserted at the position of the `pipe_through` declaration, in order with the action's own changes/preparations.
 
 
 
@@ -2182,7 +2190,10 @@ emit MyApp.Shop.Signals, :order_shipped, phase: :after_transaction
 ```
 
 ```
-emit MyApp.Shop.Signals, :order_placed, dynamic?: true
+emit MyApp.Shop.Signals, :order_placed,
+  dynamic?: true,
+  description: "When the order is paid in full."
+
 ```
 
 
@@ -2202,6 +2213,7 @@ emit MyApp.Shop.Signals, :order_placed, dynamic?: true
 | [`values`](#actions-update-emit-values){: #actions-update-emit-values } | `keyword` | `[]` | Signal fields to set to the given values, which may be templates like `arg(:reason)` or `actor(:id)`, or for update and destroy actions `previous(:field)`, the value of a field before the action. |
 | [`where`](#actions-update-emit-where){: #actions-update-emit-where } | `(any, any -> any) \| module \| list((any, any -> any) \| module)` | `[]` | Validations that must pass for the signal to be emitted. |
 | [`dynamic?`](#actions-update-emit-dynamic?){: #actions-update-emit-dynamic? } | `boolean` | `false` | Declares that the action emits the signal from your own code, with `Ash.Signals.emit/5` or `Ash.Signals.emit_many/5`, instead of emitting it. Use it when building the signal needs more than `fields` and `values` can express. |
+| [`description`](#actions-update-emit-description){: #actions-update-emit-description } | `String.t` |  | A description of when and why the action emits the signal. Especially useful with `dynamic?: true`, where the code that emits the signal decides when it is emitted. |
 
 
 
@@ -2292,7 +2304,7 @@ argument :password_confirmation, :string
 | [`allow_nil?`](#actions-update-argument-allow_nil?){: #actions-update-argument-allow_nil? } | `boolean` | `true` | Whether or not the argument value may be nil (or may be not provided). If nil value is given error is raised. |
 | [`public?`](#actions-update-argument-public?){: #actions-update-argument-public? } | `boolean` | `true` | Whether or not the argument should appear in public interfaces |
 | [`sensitive?`](#actions-update-argument-sensitive?){: #actions-update-argument-sensitive? } | `boolean` | `false` | Whether or not the argument value contains sensitive information, like PII(Personally Identifiable Information). See the [security guide](/documentation/topics/security/sensitive-data.md) for more. |
-| [`default`](#actions-update-argument-default){: #actions-update-argument-default } | `any` |  | The default value for the argument to take. It can be a zero argument function e.g `&MyMod.my_fun/0` or a value |
+| [`default`](#actions-update-argument-default){: #actions-update-argument-default } | `any` |  | The default value for the argument to take when it is not provided. An explicitly provided `nil` is not replaced by the default. It can be a zero argument function e.g `&MyMod.my_fun/0` or a value |
 
 
 
@@ -2468,7 +2480,7 @@ pipe_through names
 
 
 References one or more pipelines to apply to this action.
-Pipeline entities are prepended before the action's own changes/preparations.
+Pipeline entities are inserted at the position of the `pipe_through` declaration, in order with the action's own changes/preparations.
 
 
 
@@ -2542,7 +2554,10 @@ emit MyApp.Shop.Signals, :order_shipped, phase: :after_transaction
 ```
 
 ```
-emit MyApp.Shop.Signals, :order_placed, dynamic?: true
+emit MyApp.Shop.Signals, :order_placed,
+  dynamic?: true,
+  description: "When the order is paid in full."
+
 ```
 
 
@@ -2562,6 +2577,7 @@ emit MyApp.Shop.Signals, :order_placed, dynamic?: true
 | [`values`](#actions-destroy-emit-values){: #actions-destroy-emit-values } | `keyword` | `[]` | Signal fields to set to the given values, which may be templates like `arg(:reason)` or `actor(:id)`, or for update and destroy actions `previous(:field)`, the value of a field before the action. |
 | [`where`](#actions-destroy-emit-where){: #actions-destroy-emit-where } | `(any, any -> any) \| module \| list((any, any -> any) \| module)` | `[]` | Validations that must pass for the signal to be emitted. |
 | [`dynamic?`](#actions-destroy-emit-dynamic?){: #actions-destroy-emit-dynamic? } | `boolean` | `false` | Declares that the action emits the signal from your own code, with `Ash.Signals.emit/5` or `Ash.Signals.emit_many/5`, instead of emitting it. Use it when building the signal needs more than `fields` and `values` can express. |
+| [`description`](#actions-destroy-emit-description){: #actions-destroy-emit-description } | `String.t` |  | A description of when and why the action emits the signal. Especially useful with `dynamic?: true`, where the code that emits the signal decides when it is emitted. |
 
 
 
@@ -2652,7 +2668,7 @@ argument :password_confirmation, :string
 | [`allow_nil?`](#actions-destroy-argument-allow_nil?){: #actions-destroy-argument-allow_nil? } | `boolean` | `true` | Whether or not the argument value may be nil (or may be not provided). If nil value is given error is raised. |
 | [`public?`](#actions-destroy-argument-public?){: #actions-destroy-argument-public? } | `boolean` | `true` | Whether or not the argument should appear in public interfaces |
 | [`sensitive?`](#actions-destroy-argument-sensitive?){: #actions-destroy-argument-sensitive? } | `boolean` | `false` | Whether or not the argument value contains sensitive information, like PII(Personally Identifiable Information). See the [security guide](/documentation/topics/security/sensitive-data.md) for more. |
-| [`default`](#actions-destroy-argument-default){: #actions-destroy-argument-default } | `any` |  | The default value for the argument to take. It can be a zero argument function e.g `&MyMod.my_fun/0` or a value |
+| [`default`](#actions-destroy-argument-default){: #actions-destroy-argument-default } | `any` |  | The default value for the argument to take when it is not provided. An explicitly provided `nil` is not replaced by the default. It can be a zero argument function e.g `&MyMod.my_fun/0` or a value |
 
 
 
@@ -4646,6 +4662,7 @@ end
 | [`description`](#calculations-calculate-description){: #calculations-calculate-description } | `String.t` |  | An optional description for the calculation |
 | [`public?`](#calculations-calculate-public?){: #calculations-calculate-public? } | `boolean` | `false` | Whether or not the calculation will appear in public interfaces. |
 | [`sensitive?`](#calculations-calculate-sensitive?){: #calculations-calculate-sensitive? } | `boolean` | `false` | Whether or not references to the calculation will be considered sensitive. |
+| [`authorize?`](#calculations-calculate-authorize?){: #calculations-calculate-authorize? } | `boolean` | `false` | Whether or not the related data that the calculation uses should be authorized, when the parent query is authorized. By default, calculations are trusted, just like `Ash.Query.filter/2`: relationship references in their expressions, and relationships they load, are not subject to the related resource's read policies. When `true`, the calculation only sees related records the actor can read: - In an expression, a reference through a relationship resolves to `nil` when the related record is not readable, and `exists` only considers readable related records. - Relationships that the calculation loads are loaded with authorization. Aggregates are authorized regardless of this option, according to their own `authorize?` option. |
 | [`load`](#calculations-calculate-load){: #calculations-calculate-load } | `any` | `[]` | A load statement to be applied if the calculation is used. Only works with module-based or function-based calculations, not expression calculations. |
 | [`allow_nil?`](#calculations-calculate-allow_nil?){: #calculations-calculate-allow_nil? } | `boolean` | `true` | Whether or not the calculation can return nil. When `false`, the calculation must never return `nil`. Ash does not validate the result, so a `nil` will not raise an error. |
 | [`filterable?`](#calculations-calculate-filterable?){: #calculations-calculate-filterable? } | `boolean \| :simple_equality` | `true` | Whether or not the calculation should be usable in filters. |
